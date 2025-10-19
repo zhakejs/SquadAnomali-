@@ -1,0 +1,349 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Squad Anomali — v3</title>
+  <style>
+    /* Purple + neon theme, responsive layout */
+    :root{
+      --purple:#6A0DAD;
+      --neon:#00E5FF;
+      --bg:#0f0f12;
+      --card:#0f1724;
+      --muted:#9aa4b2;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,'Helvetica Neue',Arial;background:linear-gradient(180deg,#07060a 0%, #0f0b18 100%);color:#e6eef8}
+    .app{display:flex;min-height:100vh}
+    .sidebar{width:320px;background:linear-gradient(180deg, rgba(106,13,173,0.12), rgba(0,0,0,0.2));backdrop-filter: blur(6px);padding:18px;border-right:1px solid rgba(255,255,255,0.04)}
+    .logo{display:flex;align-items:center;gap:12px;font-weight:700;font-size:18px;color:var(--purple)}
+    .logo .dot{width:36px;height:36px;background:linear-gradient(135deg,var(--purple),#9d40ff);border-radius:10px;box-shadow:0 6px 20px rgba(106,13,173,0.25)}
+    .section{margin-top:18px}
+    .muted{color:var(--muted);font-size:13px}
+    .online-list{margin-top:8px;display:flex;flex-direction:column;gap:8px}
+    .online-item{display:flex;align-items:center;gap:10px;background:linear-gradient(90deg, rgba(106,13,173,0.06), rgba(0,0,0,0.1));padding:8px;border-radius:10px}
+    .main{flex:1;display:flex;flex-direction:column}
+    .header{padding:12px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,0.03);background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent)}
+    .content{display:flex;flex:1;gap:16px;padding:18px}
+    .left-panel{width:360px;background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);border-radius:12px;padding:12px}
+    .center{flex:1;background:linear-gradient(180deg, rgba(255,255,255,0.01), transparent);border-radius:12px;padding:12px;display:flex;flex-direction:column}
+    .right-panel{width:320px;background:linear-gradient(180deg, rgba(255,255,255,0.01), transparent);border-radius:12px;padding:12px}
+    .card{background:rgba(255,255,255,0.02);border-radius:10px;padding:10px;margin-bottom:10px}
+    .btn{background:var(--purple);color:white;padding:8px 12px;border-radius:8px;border:none;cursor:pointer;box-shadow:0 6px 18px rgba(106,13,173,0.18)}
+    .btn.ghost{background:transparent;border:1px solid rgba(255,255,255,0.06)}
+    .file-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px}
+    .folder-card{background:linear-gradient(135deg, rgba(106,13,173,0.08), rgba(0,0,0,0.05));padding:12px;border-radius:10px;cursor:pointer;border:1px solid rgba(255,255,255,0.03)}
+    .file-item{background:linear-gradient(90deg, rgba(255,255,255,0.01), transparent);padding:8px;border-radius:8px;display:flex;flex-direction:column;gap:6px;align-items:center;justify-content:center;min-height:80px}
+    .preview-modal{position:fixed;left:0;top:0;width:100%;height:100%;display:none;align-items:center;justify-content:center;background:linear-gradient(180deg, rgba(0,0,0,0.6), rgba(0,0,0,0.8));z-index:9999}
+    .preview-inner{width:90%;max-width:980px;background:#081020;padding:12px;border-radius:12px}
+    .mobile-hide{display:block}
+    @media(max-width:900px){
+      .sidebar{display:none}
+      .left-panel{display:none}
+      .right-panel{display:none}
+      .content{padding:10px}
+      .mobile-hide{display:none}
+    }
+    /* neon accents */
+    .accent{color:var(--neon)}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="sidebar">
+      <div class="logo"><div class="dot"></div>Squad Anomali</div>
+      <div class="section">
+        <div id="userBox" class="card"></div>
+        <div style="margin-top:8px"><button id="toggleTheme" class="btn ghost">Toggle Theme</button></div>
+      </div>
+      <div class="section">
+        <div class="muted">Online (<span id="onlineCount">0</span>)</div>
+        <div id="onlineList" class="online-list"></div>
+      </div>
+      <div class="section">
+        <div class="muted">File Library (Personal)</div>
+        <div style="margin-top:8px"><button id="openMyLib" class="btn">Open My Library</button></div>
+      </div>
+      <div class="section mobile-hide">
+        <div class="muted">Operator Panel</div>
+        <div style="margin-top:8px" id="opPanel"></div>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="header">
+        <div><strong class="accent">Squad Anomali</strong> — Elegant Chat & Library</div>
+        <div class="muted">v3 • Realtime • Mobile Friendly</div>
+      </div>
+
+      <div class="content">
+        <div class="left-panel card mobile-hide">
+          <div class="muted">Contacts</div>
+          <div id="contacts" style="margin-top:8px"></div>
+          <hr/>
+          <div class="muted">Folders</div>
+          <div id="myFolders" style="margin-top:8px"></div>
+        </div>
+
+        <div class="center">
+          <div class="card" style="display:flex;align-items:center;justify-content:space-between">
+            <div><strong id="channelTitle">Global Chat</strong><div class="muted" id="subTitle">Public channel</div></div>
+            <div style="display:flex;gap:8px;">
+              <div class="muted">Messages: <span id="msgCount">0</span></div>
+              <div class="muted">Users: <span id="onlineBadge">0</span></div>
+            </div>
+          </div>
+
+          <div id="messages" style="flex:1;overflow:auto;padding:12px;margin-top:8px;background:linear-gradient(180deg, rgba(255,255,255,0.01), transparent);border-radius:8px"></div>
+
+          <div class="card" style="margin-top:10px;display:flex;gap:8px;align-items:end">
+            <div style="flex:1;display:flex;flex-direction:column">
+              <textarea id="messageInput" rows="2" placeholder="Tulis pesan..." style="resize:none;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.03);background:transparent;color:inherit"></textarea>
+              <div id="fileList" style="margin-top:6px"></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;min-width:160px">
+              <input id="fileInput" type="file" multiple/>
+              <select id="chatType"><option value="global">Public</option><option value="dm">Private (DM)</option></select>
+              <input id="dmTarget" placeholder="DM target user id" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.03);background:transparent;color:inherit"/>
+              <button id="sendBtn" class="btn">Kirim</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="right-panel card mobile-hide">
+          <div class="muted">File Library Preview</div>
+          <div id="filesPreview" style="margin-top:8px"></div>
+          <hr/>
+          <div class="muted">Stickers</div>
+          <div id="stickers" style="margin-top:8px"></div>
+          <input id="stickerFile" type="file" accept="image/*"/><button id="uploadStickerBtn" class="btn">Upload Sticker</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="preview-modal" id="previewModal">
+    <div class="preview-inner">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div id="previewTitle" style="font-weight:700"></div>
+        <div><button id="closePreview" class="btn ghost">Close</button></div>
+      </div>
+      <div id="previewBody" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const API = '';
+
+    let currentUser = JSON.parse(localStorage.getItem('anomali_user') || 'null');
+
+    // Elements
+    const userBox = document.getElementById('userBox');
+    const onlineList = document.getElementById('onlineList');
+    const onlineCount = document.getElementById('onlineCount');
+    const messagesEl = document.getElementById('messages');
+    const msgCount = document.getElementById('msgCount');
+    const onlineBadge = document.getElementById('onlineBadge');
+    const messageInput = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const fileInput = document.getElementById('fileInput');
+    const fileListEl = document.getElementById('fileList');
+    const openMyLib = document.getElementById('openMyLib');
+    const previewModal = document.getElementById('previewModal');
+    const previewBody = document.getElementById('previewBody');
+    const previewTitle = document.getElementById('previewTitle');
+    const closePreview = document.getElementById('closePreview');
+    const myFoldersEl = document.getElementById('myFolders');
+    const filesPreview = document.getElementById('filesPreview');
+    const contactsEl = document.getElementById('contacts');
+    const stickersEl = document.getElementById('stickers');
+    const uploadStickerBtn = document.getElementById('uploadStickerBtn');
+    const stickerFile = document.getElementById('stickerFile');
+    const opPanel = document.getElementById('opPanel');
+    const registerReqBtn = null;
+
+    // Simple theme toggle (placeholder)
+    document.getElementById('toggleTheme').onclick = ()=> alert('Theme toggle placeholder - dark mode default');
+
+    function setUser(u){
+      currentUser = u;
+      if(u) localStorage.setItem('anomali_user', JSON.stringify(u)); else localStorage.removeItem('anomali_user');
+      renderUserBox();
+      if(u){ socket.emit('register_user', u); socket.emit('join_user_room', u.id); loadMyLibrary(); loadContacts(); }
+    }
+
+    function renderUserBox(){
+      if(currentUser){
+        userBox.innerHTML = '<div style=\"display:flex;justify-content:space-between;align-items:center\"><div><strong>'+ (currentUser.displayName || currentUser.username)+'</strong><div class=\"muted\">ID: '+currentUser.id+'</div></div><div><button id=\"logoutBtn\" class=\"btn ghost\">Logout</button></div></div>';
+        setTimeout(()=>{ document.getElementById('logoutBtn').onclick = ()=> { setUser(null); alert('Logged out'); } },50);
+      } else {
+        userBox.innerHTML = '<div class="muted">Not logged in</div><div style=\"margin-top:8px\"><button id=\"showLogin\" class=\"btn\">Login</button></div>';
+        setTimeout(()=>{ document.getElementById('showLogin').onclick = showLoginModal },50);
+      }
+    }
+
+    // --- login modal simple ---
+    function showLoginModal(){
+      const username = prompt('Username:');
+      if(!username) return;
+      const password = prompt('Password:');
+      if(!password) return;
+      fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ username, password }) }).then(r=>r.json()).then(data=>{
+        if(data.user){ setUser(data.user); alert('Logged in as '+data.user.username); } else alert('Login failed: '+JSON.stringify(data));
+      });
+    }
+
+    // load initial
+    let messagesCache = [];
+    function loadInitial(){
+      fetch('/api/messages').then(r=>r.json()).then(d=>{ messagesCache = d.messages || []; renderMessages(messagesCache); msgCount.innerText = messagesCache.length; });
+      fetch('/api/stickers').then(r=>r.json()).then(d=> renderStickers(d.stickers || []));
+      fetch('/api/users-list').then(r=>r.json()).then(d=> renderContacts(d.users || []));
+    }
+
+    function renderMessages(messages){
+      messagesEl.innerHTML = '';
+      messages.forEach(m=>{
+        // filter DM: if DM and user not involved, skip
+        if(m.channelId && m.channelId.startsWith('dm:')){
+          if(!currentUser) return;
+          const ids = m.channelId.split(':')[1].split('_');
+          if(!ids.includes(currentUser.id)) return;
+        }
+        const el = document.createElement('div');
+        el.className = 'message card';
+        el.innerHTML = '<div style=\"display:flex;justify-content:space-between\"><div><b>'+ (m.sender?.displayName || m.sender?.username) +'</b> <span class=\"muted\">'+ new Date(m.createdAt).toLocaleString() +'</span></div><div class=\"muted\">'+(m.type || 'text')+'</div></div>';
+        const body = document.createElement('div');
+        if(m.type === 'sticker' && m.attachments && m.attachments[0]){
+          const img = document.createElement('img'); img.src = m.attachments[0].url; img.style.maxWidth='220px'; body.appendChild(img);
+        } else {
+          body.innerText = m.deleted ? '[Message deleted]' : m.text;
+        }
+        el.appendChild(body);
+        // attachments preview links
+        if(m.attachments && m.attachments.length){
+          const att = document.createElement('div');
+          m.attachments.forEach(a=>{
+            const link = document.createElement('a'); link.href = a.url; link.target='_blank'; link.innerText = a.name; att.appendChild(link); att.appendChild(document.createElement('br'));
+          });
+          el.appendChild(att);
+        }
+        messagesEl.appendChild(el);
+      });
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function addMessageToCache(m){ messagesCache.push(m); renderMessages(messagesCache); msgCount.innerText = messagesCache.length; localStorage.setItem('anomali_cache_messages', JSON.stringify(messagesCache.slice(-500))); }
+
+    // socket events
+    socket.on('connect', ()=>{ if(currentUser) socket.emit('register_user', currentUser); });
+    socket.on('message', m=>{ addMessageToCache(m); });
+    socket.on('online_count', d=>{ document.getElementById('onlineCount').innerText = d.count; onlineBadge.innerText = d.count; });
+    socket.on('user_online', ({user})=>{ addOnline(user); });
+    socket.on('user_offline', ({user})=>{ removeOnline(user); });
+
+    function addOnline(u){ const id='online-'+u.id; if(document.getElementById(id)) return; const el = document.createElement('div'); el.id=id; el.className='online-item'; el.innerHTML = '<div style=\"width:36px;height:36px;border-radius:8px;background:linear-gradient(135deg,var(--purple),#9d40ff)\"></div><div><div style=\"font-weight:600\">'+(u.displayName||u.username)+'</div><div class=\"muted\">'+u.username+'</div></div>'; onlineList.appendChild(el); }
+
+    function removeOnline(u){ const id='online-'+u.id; const el=document.getElementById(id); if(el) el.remove(); }
+
+    // send message
+    sendBtn.onclick = async ()=>{
+      if(!currentUser) return alert('Login required');
+      const text = messageInput.value.trim();
+      const files = Array.from(fileInput.files || []);
+      let attachments = [];
+      for(const f of files){
+        const fd = new FormData(); fd.append('file', f); fd.append('ownerId', currentUser.id);
+        const res = await fetch('/api/files/upload', { method:'POST', body: fd }); const data = await res.json();
+        if(data.file) attachments.push({ id: data.file.id, url: location.origin + data.file.path, name: data.file.name });
+      }
+      const chatType = document.getElementById('chatType').value;
+      let channelId = 'global'; let to = null;
+      if(chatType==='dm'){ const target = document.getElementById('dmTarget').value.trim(); if(!target) return alert('Enter DM target user id'); const ids=[currentUser.id,target].sort(); channelId='dm:'+ids.join('_'); to=target; }
+      const payload = { channelId, sender: currentUser, text, attachments, type:'text', to };
+      socket.emit('send_message', payload, (ack)=>{ if(ack && ack.message){ addMessageToCache(ack.message); messageInput.value=''; fileInput.value=''; } });
+    };
+
+    // Load personal library
+    async function loadMyLibrary(){
+      if(!currentUser) return;
+      const res = await fetch('/api/files/list-user?ownerId='+encodeURIComponent(currentUser.id));
+      const data = await res.json();
+      renderMyFolders(data.folders || []);
+      renderMyFiles(data.files || []);
+    }
+    function renderMyFolders(folders){
+      myFoldersEl.innerHTML = '';
+      folders.forEach(f=>{
+        const el = document.createElement('div'); el.className='folder-card'; el.innerText = f.name; el.onclick = ()=> openFolder(f.id,f.name); myFoldersEl.appendChild(el);
+      });
+    }
+    function renderMyFiles(files){
+      filesPreview.innerHTML = '';
+      files.forEach(fl=>{
+        const el = document.createElement('div'); el.className='file-item'; el.innerHTML = '<div style=\"font-size:13px\">'+fl.name+'</div><div class=\"muted\">'+(Math.round(fl.size/1024))+' KB</div>'; el.onclick = ()=> previewFile(fl); filesPreview.appendChild(el);
+      });
+    }
+    async function openFolder(id,name){
+      // for prototype, just alert and filter files by parentId
+      if(!currentUser) return alert('Login required');
+      const res = await fetch('/api/files/list-user?ownerId='+encodeURIComponent(currentUser.id));
+      const data = await res.json();
+      const files = (data.files||[]).filter(x=>x.parentId===id);
+      // render in preview modal
+      previewTitle.innerText = name;
+      previewBody.innerHTML = files.map(f=>'<div style=\"margin-bottom:8px\"><a href=\"'+(location.origin+f.path)+'\" target=\"_blank\">'+f.name+'</a> <button onclick=\"downloadFile(\\''+f.id+'\\')\">Download</button> <button onclick=\"deleteFile(\\''+f.id+'\\')\">Delete</button></div>').join('');
+      previewModal.style.display='flex';
+    }
+    window.downloadFile = async function(id){ const res = await fetch('/api/files/list'); alert('Download via link in the preview.'); }
+    window.deleteFile = async function(id){ if(!confirm('Delete file?')) return; const res = await fetch('/api/files/delete-file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fileId:id})}); const d=await res.json(); if(d.ok) { alert('Deleted'); loadMyLibrary(); } }
+
+    // Preview file in modal
+    function previewFile(f){
+      previewTitle.innerText = f.name;
+      const ext = f.name.split('.').pop().toLowerCase();
+      let html='';
+      if(['png','jpg','jpeg','gif','webp'].includes(ext)){
+        html = '<img src=\"'+(location.origin+f.path)+'\" style=\"max-width:100%;height:auto;border-radius:8px\"/>';
+      } else if(['mp4','webm'].includes(ext)){
+        html = '<video controls style=\"max-width:100%;height:auto;border-radius:8px\"><source src=\"'+(location.origin+f.path)+'\"/></video>';
+      } else if(ext==='pdf'){
+        html = '<iframe src=\"'+(location.origin+f.path)+'\" style=\"width:100%;height:600px;border:none\"></iframe>';
+      } else {
+        html = '<div class=\"muted\">Preview not available. <a href=\"'+(location.origin+f.path)+'\" target=\"_blank\">Download</a></div>';
+      }
+      previewBody.innerHTML = html + '<div style=\"margin-top:8px\"><button class=\"btn ghost\" onclick=\"closePreviewFunc()\">Close</button> <a class=\"btn\" href=\"'+(location.origin+f.path)+'\" download>Download</a></div>';
+      previewModal.style.display='flex';
+    }
+    closePreview.onclick = ()=> previewModal.style.display='none';
+    window.closePreviewFunc = ()=> previewModal.style.display='none';
+
+    // Stickers
+    uploadStickerBtn.onclick = async ()=>{
+      if(!stickerFile.files[0]) return alert('Choose sticker');
+      const fd = new FormData(); fd.append('sticker', stickerFile.files[0]);
+      const res = await fetch('/api/stickers/upload', { method:'POST', body: fd });
+      const data = await res.json();
+      if(data.sticker) { alert('Sticker uploaded'); fetch('/api/stickers').then(r=>r.json()).then(d=> renderStickers(d.stickers || [])); }
+    };
+    function renderStickers(list){ stickersEl.innerHTML = list.map(s=>'<div style=\"margin-bottom:8px\"><img src=\"'+(location.origin+s.path)+'\" style=\"max-width:80px\"/><div class=\"muted\">'+s.name+'</div></div>').join(''); }
+
+    // Contacts
+    function renderContacts(list){ contactsEl.innerHTML = list.map(u=>'<div style=\"padding:6px;border-radius:6px\">'+(u.displayName||u.username)+' <span class=\"muted\">('+u.id+')</span></div>').join(''); }
+
+    // Load contacts and initial data
+    function loadContacts(){ fetch('/api/users-list').then(r=>r.json()).then(d=> renderContacts(d.users || [])); }
+    // initial
+    renderUserBox();
+    loadInitial();
+    if(currentUser) { setUser(currentUser); }
+
+    // restore messages cache
+    const cached = localStorage.getItem('anomali_cache_messages'); if(cached){ try{ messagesCache = JSON.parse(cached); renderMessages(messagesCache); }catch(e){} }
+
+  </script>
+</body>
+</html>

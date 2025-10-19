@@ -1,0 +1,399 @@
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
+const { v4: uuidv4 } = require('uuid');
+const bcrypt = require('bcryptjs');
+const { Low, JSONFile } = require('lowdb');
+
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+const FILES_DIR = path.join(DATA_DIR, 'uploads');
+if (!fs.existsSync(FILES_DIR)) fs.mkdirSync(FILES_DIR);
+const STICKERS_DIR = path.join(DATA_DIR, 'stickers');
+if (!fs.existsSync(STICKERS_DIR)) fs.mkdirSync(STICKERS_DIR);
+
+// LowDB for simple JSON persistence
+const adapter = new JSONFile(path.join(DATA_DIR, 'db.json'));
+const db = new Low(adapter);
+
+(async () => {
+  await db.read();
+  db.data = db.data || { users: [], messages: [], channels: [{id:'global',name:'Global'}], files: [], folders: [], approvals: [], registrations: [], stickers: [] };
+  // Seed predefined users (IDs 1781..1787) if not present
+  const seed = [
+    { userid: '1781', username: '1781', passwordPlain: 'Miru', displayName: 'Operator 1781', role: 'operator' },
+    { userid: '1782', username: '1782', passwordPlain: 'Akmal', displayName: 'User 1782' , role: 'member'},
+    { userid: '1783', username: '1783', passwordPlain: 'Rio', displayName: 'User 1783' , role: 'member'},
+    { userid: '1784', username: '1784', passwordPlain: 'Fahri', displayName: 'User 1784' , role: 'member'},
+    { userid: '1785', username: '1785', passwordPlain: 'Aruna', displayName: 'User 1785' , role: 'member'},
+    { userid: '1786', username: '1786', passwordPlain: 'Ridho', displayName: 'User 1786' , role: 'member'},
+    { userid: '1787', username: '1787', passwordPlain: 'Havid', displayName: 'User 1787' , role: 'member'}
+  ];
+  for(const s of seed){
+    let exists = db.data.users.find(u=>u.username===s.username);
+    if(!exists){
+      const hash = bcrypt.hashSync(s.passwordPlain, 8);
+      db.data.users.push({ id: s.userid, username: s.username, passwordHash: hash, role: s.role, displayName: s.displayName, createdAt: Date.now() });
+    }
+  }
+  // Create 30 initial folders if not present
+  if(!db.data.folders || db.data.folders.length < 30){
+    db.data.folders = db.data.folders || [];
+    for(let i=1;i<=30;i++){
+      db.data.folders.push({ id: 'folder-'+i, ownerId: 'system', name: 'Folder '+i, parentId: null, createdAt: Date.now() });
+    }
+  }
+  await db.write();
+})();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+app.use('/data/uploads', express.static(FILES_DIR));
+app.use('/data/stickers', express.static(STICKERS_DIR));
+
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*' } });
+
+// Multer for file/sticker uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, FILES_DIR);
+  },
+  filename: function (req, file, cb) {
+    const id = Date.now() + '-' + Math.random().toString(36).slice(2,9);
+    cb(null, id + '-' + file.originalname.replace(/\s+/g,'_'));
+  }
+});
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
+});
+
+const stickerStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, STICKERS_DIR);
+  },
+  filename: function (req, file, cb) {
+    const id = Date.now() + '-' + Math.random().toString(36).slice(2,9);
+    cb(null, id + '-' + file.originalname.replace(/\s+/g,'_'));
+  }
+});
+const uploadSticker = multer({ 
+  storage: stickerStorage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit for stickers
+  fileFilter: function (req, file, cb) {
+    const allowed = ['image/png','image/jpeg','image/gif','image/webp'];
+    if(!allowed.includes(file.mimetype)) return cb(new Error('Sticker type not allowed'));
+    cb(null, true);
+  }
+});
+
+// Simple in-memory online map (socketId -> user)
+const online = new Map();
+
+// Simple rate limiter per IP (very basic)
+const rateMap = new Map();
+function rateLimit(ip, max=30, windowSec=60){
+  const now = Date.now();
+  const rec = rateMap.get(ip) || { count:0, ts: now };
+  if(now - rec.ts > windowSec*1000){ rec.count = 0; rec.ts = now; }
+  rec.count++;
+  rateMap.set(ip, rec);
+  return rec.count <= max;
+}
+
+async function saveDb(){ await db.write(); }
+function sanitizeUserForClient(u){ if(!u) return u; return { id: u.id, username: u.username, role: u.role, displayName: u.displayName }; }
+
+// Auth simulation: login using seeded users or created users
+app.post('/api/login', async (req, res) => {
+  const ip = req.ip;
+  if(!rateLimit(ip,60,60)) return res.status(429).json({ error:'rate_limited' });
+  const { username, password } = req.body;
+  await db.read();
+  const user = db.data.users.find(u=>u.username===username);
+  if(!user || !bcrypt.compareSync(password || '', user.passwordHash)) return res.status(400).json({ error:'invalid' });
+  // return user (no real token for this prototype)
+  res.json({ ok:true, user: sanitizeUserForClient(user) });
+});
+
+// Registration: when someone submits registration, create a registration request that must be approved
+app.post('/api/register-request', async (req, res) => {
+  const ip = req.ip;
+  if(!rateLimit(ip,20,60)) return res.status(429).json({ error:'rate_limited' });
+  const { username, password, displayName } = req.body;
+  if(!username || !password) return res.status(400).json({ error:'username_password_required' });
+  await db.read();
+  // Do not show seed or allowed list to frontend. Allow any registration request, but it must be approved.
+  if(db.data.users.find(u=>u.username===username)) return res.status(400).json({ error:'exists' });
+  const reqItem = { id: uuidv4(), username, passwordHash: bcrypt.hashSync(password,8), displayName: displayName||username, status:'pending', createdAt: Date.now() };
+  db.data.registrations.push(reqItem);
+  await saveDb();
+  // notify operators via socket
+  io.emit('registration_requested', { id: reqItem.id, username: reqItem.username, displayName: reqItem.displayName, createdAt: reqItem.createdAt });
+  res.json({ ok:true, requestId: reqItem.id });
+});
+
+// Operators can approve or deny registration
+app.post('/api/approve-registration', async (req, res) => {
+  const { requestId, approve, operatorId } = req.body;
+  await db.read();
+  const r = db.data.registrations.find(x=>x.id===requestId);
+  if(!r) return res.status(404).json({ error:'not_found' });
+  if(r.status !== 'pending') return res.status(400).json({ error:'already_processed' });
+  if(approve){
+    const newUserId = (Math.floor(Math.random()*1000000)).toString();
+    const user = { id: newUserId, username: r.username, passwordHash: r.passwordHash, role: 'member', displayName: r.displayName, createdAt: Date.now() };
+    db.data.users.push(user);
+    r.status = 'approved'; r.processedAt = Date.now(); r.processedBy = operatorId || 'system';
+    await saveDb();
+    io.emit('registration_result', { requestId: r.id, approved:true, user: sanitizeUserForClient(user) });
+    return res.json({ ok:true, user: sanitizeUserForClient(user) });
+  } else {
+    r.status = 'denied'; r.processedAt = Date.now(); r.processedBy = operatorId || 'system';
+    await saveDb();
+    io.emit('registration_result', { requestId: r.id, approved:false });
+    return res.json({ ok:true });
+  }
+});
+
+// Settings: change username/password (user must provide current username for this prototype)
+app.post('/api/settings/change-username', async (req, res) => {
+  const { userId, newUsername } = req.body;
+  await db.read();
+  const user = db.data.users.find(u=>u.id===userId);
+  if(!user) return res.status(404).json({ error:'not_found' });
+  if(db.data.users.find(u=>u.username===newUsername)) return res.status(400).json({ error:'username_taken' });
+  user.username = newUsername;
+  await saveDb();
+  res.json({ ok:true, user: sanitizeUserForClient(user) });
+});
+app.post('/api/settings/change-password', async (req, res) => {
+  const { userId, oldPassword, newPassword } = req.body;
+  await db.read();
+  const user = db.data.users.find(u=>u.id===userId);
+  if(!user || !bcrypt.compareSync(oldPassword || '', user.passwordHash)) return res.status(400).json({ error:'invalid' });
+  user.passwordHash = bcrypt.hashSync(newPassword, 8);
+  await saveDb();
+  res.json({ ok:true });
+});
+
+// File library endpoints (create folder, upload file, list, delete)
+app.get('/api/files/list', async (req,res)=>{
+  await db.read();
+  res.json({ folders: db.data.folders || [], files: db.data.files || [] });
+});
+app.post('/api/files/create-folder', async (req,res)=>{
+  const { ownerId, name, parentId } = req.body;
+  if(!name) return res.status(400).json({ error:'name_required' });
+  await db.read();
+  const folder = { id: uuidv4(), ownerId: ownerId || 'system', name, parentId: parentId || null, createdAt: Date.now() };
+  db.data.folders.push(folder);
+  await saveDb();
+  io.emit('folder_created', folder);
+  res.json({ ok:true, folder });
+});
+app.post('/api/files/upload', upload.single('file'), async (req,res)=>{
+  await db.read();
+  const { ownerId, parentId } = req.body;
+  if(!req.file) return res.status(400).json({ error:'file_required' });
+  // Basic allowed types
+  const allowed = ['image/png','image/jpeg','image/gif','video/mp4','application/pdf','text/plain'];
+  if(!allowed.includes(req.file.mimetype)) {
+    try{ fs.unlinkSync(req.file.path); }catch(e){}
+    return res.status(400).json({ error:'file_type_not_allowed' });
+  }
+  const file = {
+    id: uuidv4(),
+    ownerId: ownerId || 'guest',
+    name: req.file.originalname,
+    path: '/data/uploads/' + path.basename(req.file.path),
+    filename: path.basename(req.file.path),
+    size: req.file.size,
+    mimetype: req.file.mimetype,
+    parentId: parentId || null,
+    createdAt: Date.now()
+  };
+  db.data.files.push(file);
+  await saveDb();
+  io.emit('file_uploaded', file);
+  res.json({ ok:true, file });
+});
+app.post('/api/files/delete', async (req,res)=>{
+  const { fileId } = req.body;
+  await db.read();
+  const idx = db.data.files.findIndex(f=>f.id===fileId);
+  if(idx===-1) return res.status(404).json({ error:'not_found' });
+  const f = db.data.files.splice(idx,1)[0];
+  try{ fs.unlinkSync(path.join(FILES_DIR, f.filename)); }catch(e){};
+  await saveDb();
+  io.emit('file_deleted', { fileId });
+  res.json({ ok:true });
+});
+
+// Stickers: upload and list
+app.post('/api/stickers/upload', uploadSticker.single('sticker'), async (req,res)=>{
+  await db.read();
+  if(!req.file) return res.status(400).json({ error:'file_required' });
+  const s = { id: uuidv4(), name: req.file.originalname, path: '/data/stickers/' + path.basename(req.file.path), createdAt: Date.now() };
+  db.data.stickers.push(s);
+  await saveDb();
+  io.emit('sticker_uploaded', s);
+  res.json({ ok:true, sticker: s });
+});
+app.get('/api/stickers', async (req,res)=>{
+  await db.read();
+  res.json({ stickers: db.data.stickers || [] });
+});
+
+// Messages API
+app.get('/api/messages', async (req,res)=>{
+  await db.read();
+  res.json({ messages: db.data.messages || [] });
+});
+
+// Socket.IO realtime handlers
+io.on('connection', (socket) => {
+  console.log('socket connected', socket.id);
+
+  socket.on('register_user', async (user) => {
+    // user: { id, username }
+    online.set(socket.id, user);
+    io.emit('user_online', { user: sanitizeUserForClient(user) });
+    io.emit('online_count', { count: online.size });
+  });
+
+  socket.on('join_channel', (data) => {
+    const { channelId } = data;
+    socket.join(channelId);
+  });
+
+  socket.on('send_message', async (payload, cb) => {
+    // payload: { channelId, sender, text, attachments, to }  // if to provided and channelId starts with 'dm', it's a DM
+    await db.read();
+    const msg = {
+      id: uuidv4(),
+      channelId: payload.channelId || 'global',
+      sender: payload.sender,
+      text: payload.text || '',
+      attachments: payload.attachments || [],
+      type: payload.type || 'text',
+      to: payload.to || null,
+      editedAt: null,
+      deleted: false,
+      createdAt: Date.now()
+    };
+    db.data.messages.push(msg);
+    await saveDb();
+    // If DM, emit only to involved users (socket rooms: 'user-{id}')
+    if(msg.channelId && msg.channelId.startsWith('dm:')){
+      // dm:dmId where dmId is deterministic (sorted user ids)
+      io.to(msg.channelId).emit('message', msg);
+    } else {
+      io.to('global').emit('message', msg);
+      io.emit('message', msg);
+    }
+    if(cb) cb({ ok:true, message: msg });
+  });
+
+  socket.on('edit_message', async ({ messageId, newText }) => {
+    await db.read();
+    const m = db.data.messages.find(x=>x.id===messageId);
+    if(m){
+      m.text = newText;
+      m.editedAt = Date.now();
+      await saveDb();
+      io.emit('message_edited', { messageId, newText });
+    }
+  });
+
+  socket.on('delete_message', async ({ messageId }) => {
+    await db.read();
+    const m = db.data.messages.find(x=>x.id===messageId);
+    if(m){
+      m.deleted = true;
+      await saveDb();
+      io.emit('message_deleted', { messageId });
+    }
+  });
+
+  socket.on('cut_message', async ({ messageId, targetChannel }) => {
+    await db.read();
+    const idx = db.data.messages.findIndex(x=>x.id===messageId);
+    if(idx !== -1){
+      const [m] = db.data.messages.splice(idx,1);
+      m.deleted = true;
+      await saveDb();
+      io.emit('message_deleted', { messageId });
+      const newMsg = { ...m, id: uuidv4(), channelId: targetChannel || 'global', createdAt: Date.now(), deleted:false };
+      db.data.messages.push(newMsg);
+      await saveDb();
+      io.emit('message', newMsg);
+    }
+  });
+
+  // private: allow sockets to join personal room for DMs
+  socket.on('join_user_room', (userId) => {
+    socket.join('user-'+userId);
+  });
+
+  // operator actions: invite/kick
+  socket.on('operator_invite', ({ channelId, userId, by }) => {
+    io.emit('invited', { channelId, userId, by });
+  });
+
+  socket.on('operator_kick', ({ channelId, userId, by }) => {
+    io.emit('kicked', { channelId, userId, by });
+  });
+
+  socket.on('request_approval', async ({ actionType, requestedBy, meta }) => {
+    await db.read();
+    const approval = { id: uuidv4(), actionType, requestedBy, meta, status: 'pending', createdAt: Date.now() };
+    db.data.approvals.push(approval);
+    await saveDb();
+    io.emit('approval_required', approval);
+  });
+
+  socket.on('respond_approval', async ({ approvalId, decision, by }) => {
+    await db.read();
+    const a = db.data.approvals.find(x=>x.id===approvalId);
+    if(a){
+      a.status = decision;
+      a.respondedBy = by;
+      a.respondedAt = Date.now();
+      await saveDb();
+      io.emit('approval_result', a);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    const user = online.get(socket.id);
+    if(user) {
+      io.emit('user_offline', { user: sanitizeUserForClient(user) });
+    }
+    online.delete(socket.id);
+    io.emit('online_count', { count: online.size });
+  });
+});
+
+
+
+// Helper endpoints for frontend convenience
+app.get('/api/users-list', async (req,res)=>{
+  await db.read();
+  const users = (db.data.users || []).map(u => ({ id: u.id, username: u.username, displayName: u.displayName, role: u.role }));
+  res.json({ users });
+});
+app.get('/api/registrations-list', async (req,res)=>{
+  await db.read();
+  res.json({ registrations: db.data.registrations || [] });
+});
+
+const PORT = process.env.PORT || 4000;
+server.listen(PORT, () => console.log('Server listening on', PORT));

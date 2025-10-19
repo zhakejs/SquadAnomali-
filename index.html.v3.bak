@@ -1,0 +1,393 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Squad Anomali</title>
+  <style>
+    body { font-family: Inter, Arial; margin:0; height:100vh; display:flex; background:#f7f8fb; }
+    #sidebar { width:320px; border-right:1px solid #e6e9ef; padding:16px; box-sizing:border-box; background:white; }
+    #main { flex:1; display:flex; flex-direction:column; }
+    .header { padding:12px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center; background:white; }
+    .messages { flex:1; overflow:auto; padding:16px; }
+    .message { padding:10px; border-radius:8px; margin-bottom:8px; background:white; box-shadow:0 1px 0 rgba(0,0,0,0.03); }
+    .inputRow { padding:12px; border-top:1px solid #eee; display:flex; gap:8px; align-items:end; background:#fff; }
+    .attachments { display:flex; gap:6px; align-items:center; }
+    .file-thumb { max-width:120px; max-height:80px; object-fit:cover; border-radius:4px; border:1px solid #ddd; }
+    .onlineItem { font-size:13px; padding:6px; border-radius:6px; background:#f3f7ff; margin-bottom:6px; }
+    button { cursor:pointer; padding:8px 10px; border-radius:6px; border:1px solid #dfe6f0; background:#fff; }
+    input, textarea { padding:8px; border:1px solid #e3e6ef; border-radius:6px; width:100%; box-sizing:border-box; }
+    .muted { font-size:12px; color:#777; }
+    .sectionTitle { font-weight:bold; margin-top:8px; margin-bottom:6px; }
+    .badge { background:#eef6ff; padding:4px 8px; border-radius:999px; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h2>Squad Anomali</h2>
+    <div id="userBox"></div>
+    <div class="sectionTitle">Online (<span id="onlineCount">0</span>)</div>
+    <div id="onlineList"></div>
+
+    <div class="sectionTitle">File Library</div>
+    <div id="folders"></div>
+    <div id="files"></div>
+    <button id="createFolderBtn">Create Folder</button>
+
+    <div class="sectionTitle">Stickers</div>
+    <div id="stickers"></div>
+    <input id="stickerFile" type="file" accept="image/*"/><button id="uploadStickerBtn">Upload Sticker</button>
+
+    <div class="sectionTitle">Operator Panel</div>
+    <div id="registrations"></div>
+    <button id="refreshRegs">Refresh Requests</button>
+
+    <div class="sectionTitle">Account</div>
+    <input id="reg_username" placeholder="username"/>
+    <input id="reg_password" placeholder="password" type="password"/>
+    <input id="reg_display" placeholder="display name (optional)"/>
+    <button id="registerRequestBtn">Request Registration</button>
+
+    <div style="margin-top:12px;">
+      <input id="login_username" placeholder="username"/>
+      <input id="login_password" placeholder="password" type="password"/>
+      <button id="loginBtn">Login</button>
+      <button id="logoutBtn">Logout</button>
+    </div>
+  </div>
+
+  <div id="main">
+    <div class="header">
+      <div><strong id="channelTitle">Global</strong> <span class="muted"> - public & private chats</span></div>
+      <div>
+        <span class="badge">Messages: <span id="msgCount">0</span></span>
+        <span class="badge">Users: <span id="onlineBadge">0</span></span>
+      </div>
+    </div>
+
+    <div style="display:flex; gap:12px; align-items:flex-start; padding:12px; background:#f0f2f7;">
+      <div style="width:220px; background:white; padding:8px; border-radius:8px;">
+        <div class="sectionTitle">Contacts</div>
+        <div id="contacts"></div>
+      </div>
+      <div style="flex:1; display:flex; flex-direction:column; background:white; border-radius:8px; overflow:hidden;">
+        <div class="messages" id="messages"></div>
+        <div class="inputRow">
+          <div style="flex:1; display:flex; flex-direction:column;">
+            <textarea id="messageInput" rows="2" placeholder="Tulis pesan..."></textarea>
+            <div id="fileList"></div>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:6px;">
+            <input id="fileInput" type="file" multiple />
+            <select id="chatType"><option value="global">Public</option><option value="dm">Private (DM)</option></select>
+            <input id="dmTarget" placeholder="DM target user id (e.g. 1782)" />
+            <button id="sendBtn">Kirim</button>
+            <button id="sendStickerBtn">Kirim Sticker</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+
+    let currentUser = JSON.parse(localStorage.getItem('anomali_user') || 'null');
+    const API = '';
+
+    // Elements
+    const userBox = document.getElementById('userBox');
+    const onlineList = document.getElementById('onlineList');
+    const onlineCount = document.getElementById('onlineCount');
+    const onlineBadge = document.getElementById('onlineBadge');
+    const messagesEl = document.getElementById('messages');
+    const msgCount = document.getElementById('msgCount');
+    const messageInput = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const fileInput = document.getElementById('fileInput');
+    const fileListEl = document.getElementById('fileList');
+    const createFolderBtn = document.getElementById('createFolderBtn');
+    const foldersEl = document.getElementById('folders');
+    const filesEl = document.getElementById('files');
+    const contactsEl = document.getElementById('contacts');
+    const stickersEl = document.getElementById('stickers');
+    const stickerFile = document.getElementById('stickerFile');
+    const uploadStickerBtn = document.getElementById('uploadStickerBtn');
+    const registrationsEl = document.getElementById('registrations');
+    const refreshRegs = document.getElementById('refreshRegs');
+
+    // Auth UI
+    const reg_username = document.getElementById('reg_username');
+    const reg_password = document.getElementById('reg_password');
+    const reg_display = document.getElementById('reg_display');
+    const registerRequestBtn = document.getElementById('registerRequestBtn');
+    const login_username = document.getElementById('login_username');
+    const login_password = document.getElementById('login_password');
+    const loginBtn = document.getElementById('loginBtn');
+    const logoutBtn = document.getElementById('logoutBtn');
+
+    function setUser(u){
+      currentUser = u;
+      if(u) localStorage.setItem('anomali_user', JSON.stringify(u));
+      else localStorage.removeItem('anomali_user');
+      renderUserBox();
+      if(u) {
+        socket.emit('register_user', u);
+        socket.emit('join_user_room', u.id);
+      }
+    }
+    function renderUserBox(){
+      if(currentUser){
+        userBox.innerHTML = '<div><b>'+currentUser.displayName+'</b></div><div class="muted">ID: '+currentUser.id+' ('+currentUser.username+')</div>';
+      } else {
+        userBox.innerHTML = '<div class="muted">Not logged in</div>';
+      }
+    }
+
+    async function loadInitial(){
+      const res = await fetch(API + '/api/messages');
+      const data = await res.json();
+      window.messagesCache = data.messages || [];
+      renderMessages(window.messagesCache);
+      msgCount.innerText = window.messagesCache.length;
+
+      const fres = await fetch(API + '/api/files/list');
+      const fdata = await fres.json();
+      renderFileLibrary(fdata.folders || [], fdata.files || []);
+
+      const sres = await fetch(API + '/api/stickers');
+      const sdata = await sres.json();
+      renderStickers(sdata.stickers || []);
+
+      // load registrations for operator panel
+      fetchRegistrations();
+      // load contacts (users list)
+      fetch('/api/users-list').then(r=>r.json()).then(d=> renderContacts(d.users || []));
+    }
+
+    function renderMessages(messages){
+      messagesEl.innerHTML = '';
+      messages.forEach(m => {
+        const el = document.createElement('div');
+        el.className = 'message';
+        el.id = 'msg-'+m.id;
+        const top = document.createElement('div');
+        top.innerHTML = '<b>'+ (m.sender?.displayName || m.sender?.username || 'Unknown') +'</b> <span class="muted">'+ new Date(m.createdAt).toLocaleString() +'</span>';
+        const body = document.createElement('div');
+        if(m.type === 'sticker' && m.attachments && m.attachments[0]){
+          const img = document.createElement('img');
+          img.src = m.attachments[0].url;
+          img.style.maxWidth='240px';
+          body.appendChild(img);
+        } else {
+          body.innerText = m.deleted ? '[Pesan dihapus]' : m.text;
+        }
+        if(m.attachments && m.attachments.length && m.type!=='sticker'){
+          const att = document.createElement('div');
+          m.attachments.forEach(a=>{
+            const ael = document.createElement('div');
+            const link = document.createElement('a');
+            link.href = a.url;
+            link.target = '_blank';
+            link.innerText = a.name;
+            ael.appendChild(link);
+            att.appendChild(ael);
+          });
+          body.appendChild(att);
+        }
+        el.appendChild(top);
+        el.appendChild(body);
+        const actions = document.createElement('div');
+        actions.className = 'muted';
+        if(currentUser && m.sender && m.sender.id === currentUser.id && !m.deleted){
+          const editBtn = document.createElement('button'); editBtn.innerText='Edit'; editBtn.onclick = ()=> editMessagePrompt(m.id);
+          const delBtn = document.createElement('button'); delBtn.innerText='Hapus'; delBtn.onclick = ()=> deleteMessage(m.id);
+          const cutBtn = document.createElement('button'); cutBtn.innerText='Potong'; cutBtn.onclick = ()=> cutMessage(m.id);
+          actions.appendChild(editBtn); actions.appendChild(delBtn); actions.appendChild(cutBtn);
+        }
+        el.appendChild(actions);
+        messagesEl.appendChild(el);
+      });
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function addMessageToCache(m){
+      window.messagesCache = window.messagesCache || [];
+      window.messagesCache.push(m);
+      renderMessages(window.messagesCache);
+      msgCount.innerText = window.messagesCache.length;
+      localStorage.setItem('anomali_cache_messages', JSON.stringify(window.messagesCache.slice(-500)));
+    }
+
+    // Socket events
+    socket.on('connect', ()=>{ if(currentUser) socket.emit('register_user', currentUser); });
+    socket.on('message', (m)=>{ addMessageToCache(m); });
+    socket.on('message_edited', ({ messageId, newText })=>{
+      const m = (window.messagesCache||[]).find(x=>x.id===messageId);
+      if(m){ m.text = newText; m.editedAt = Date.now(); renderMessages(window.messagesCache); }
+    });
+    socket.on('message_deleted', ({ messageId })=>{
+      const m = (window.messagesCache||[]).find(x=>x.id===messageId);
+      if(m){ m.deleted = true; renderMessages(window.messagesCache); }
+    });
+    socket.on('user_online', ({ user })=>{ addOnline(user); });
+    socket.on('user_offline', ({ user })=>{ removeOnline(user); });
+    socket.on('online_count', ({ count })=>{ onlineCount.innerText = count; onlineBadge.innerText = count; });
+    socket.on('file_uploaded', ()=>{ fetch('/api/files/list').then(r=>r.json()).then(d=> renderFileLibrary(d.folders || [], d.files || [])); });
+    socket.on('sticker_uploaded', (s)=>{ fetch('/api/stickers').then(r=>r.json()).then(d=> renderStickers(d.stickers || [])); });
+    socket.on('registration_requested', (r)=>{ fetchRegistrations(); });
+    socket.on('registration_result', (r)=>{ fetchRegistrations(); if(r.approved && r.user){ alert('Registration approved: '+ r.user.username); } });
+
+    // Online list handling
+    function addOnline(u){
+      const id = 'online-'+u.id;
+      if(document.getElementById(id)) return;
+      const el = document.createElement('div');
+      el.id = id; el.className='onlineItem'; el.innerText = u.displayName || u.username;
+      onlineList.appendChild(el);
+    }
+    function removeOnline(u){
+      const id = 'online-'+u.id;
+      const el = document.getElementById(id); if(el) el.remove();
+    }
+
+    // Actions: send/edit/delete/cut
+    sendBtn.onclick = async ()=>{
+      if(!currentUser){ return alert('Silakan login dulu'); }
+      const text = messageInput.value.trim();
+      const files = Array.from(fileInput.files || []);
+      let attachments = [];
+      if(files.length){
+        for(const f of files){
+          const fd = new FormData();
+          fd.append('file', f);
+          fd.append('ownerId', currentUser.id);
+          const res = await fetch('/api/files/upload', { method:'POST', body: fd });
+          const data = await res.json();
+          if(data.file) attachments.push({ id: data.file.id, url: location.origin + data.file.path, name: data.file.name });
+        }
+      }
+      const chatType = document.getElementById('chatType').value;
+      let channelId = 'global';
+      let to = null;
+      if(chatType === 'dm'){
+        const target = document.getElementById('dmTarget').value.trim();
+        if(!target) return alert('Masukkan user id tujuan untuk DM');
+        // deterministic DM id: dm:userA_userB (sorted)
+        const ids = [currentUser.id, target].sort();
+        channelId = 'dm:' + ids.join('_');
+        to = target;
+      }
+      const payload = { channelId, sender: currentUser, text, attachments, type: 'text', to };
+      socket.emit('send_message', payload, (ack)=>{
+        if(ack && ack.message){ addMessageToCache(ack.message); messageInput.value=''; fileInput.value=''; fileListEl.innerHTML=''; }
+      });
+    };
+
+    function editMessagePrompt(id){
+      const newText = prompt('Edit pesan:');
+      if(newText !== null) socket.emit('edit_message', { messageId: id, newText });
+    }
+    function deleteMessage(id){
+      if(confirm('Hapus pesan?')) socket.emit('delete_message', { messageId: id });
+    }
+    function cutMessage(id){
+      const target = prompt('Masukkan channel tujuan (mis. clipboard):','clipboard');
+      if(target) socket.emit('cut_message', { messageId: id, targetChannel: target });
+    }
+
+    // File library UI
+    function renderFileLibrary(folders, files){
+      foldersEl.innerHTML = folders.map(f=> '<div>- '+f.name+' ('+f.ownerId+')</div>').join('');
+      filesEl.innerHTML = files.map(f=> '<div>- <a href="'+ (location.origin + f.path) +'" target="_blank">'+f.name+'</a> ('+f.ownerId+')</div>').join('');
+    }
+    createFolderBtn.onclick = async ()=>{
+      if(!currentUser) return alert('Login required');
+      const name = prompt('Nama folder:');
+      if(!name) return;
+      const res = await fetch('/api/files/create-folder', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ownerId: currentUser.id, name }) });
+      const data = await res.json();
+      if(data.folder) alert('Folder created');
+    };
+
+    // Stickers
+    uploadStickerBtn.onclick = async ()=>{
+      if(!stickerFile.files[0]) return alert('Pilih file sticker');
+      const fd = new FormData();
+      fd.append('sticker', stickerFile.files[0]);
+      const res = await fetch('/api/stickers/upload', { method:'POST', body: fd });
+      const data = await res.json();
+      if(data.sticker) alert('Sticker uploaded');
+    };
+    function renderStickers(list){
+      stickersEl.innerHTML = list.map(s=> '<div><img src="'+ (location.origin + s.path) +'" style="max-width:80px"/><div class="muted">'+s.name+'</div></div>').join('');
+    }
+    document.getElementById('sendStickerBtn').onclick = async ()=>{
+      if(!currentUser) return alert('login required');
+      const sel = prompt('Masukkan sticker filename persis seperti yang terlihat di sidebar (contoh: sticker.png)');
+      if(!sel) return;
+      // find sticker in list
+      const res = await fetch('/api/stickers');
+      const data = await res.json();
+      const s = (data.stickers || []).find(x=> x.name === sel);
+      if(!s) return alert('Sticker not found by that name. Use exact filename from the sticker list.');
+      const channelId = document.getElementById('chatType').value === 'dm' ? ('dm:' + [currentUser.id, document.getElementById('dmTarget').value.trim()].sort().join('_')) : 'global';
+      const payload = { channelId, sender: currentUser, text:'', attachments: [{ id: s.id, url: location.origin + s.path, name: s.name }], type:'sticker' };
+      socket.emit('send_message', payload, (ack)=>{ if(ack && ack.message) addMessageToCache(ack.message); });
+    };
+
+    // Registrations (operator panel)
+    async function fetchRegistrations(){
+      // load registrations from server (we'll use messages endpoint for demo)
+      const res = await fetch('/api/registrations-list');
+      if(res.status===404) { registrationsEl.innerHTML = '<div class="muted">No registration API on server</div>'; return; }
+      const data = await res.json();
+      registrationsEl.innerHTML = (data.registrations || []).map(r=> '<div>Req '+r.username+' - '+r.status+' <button onclick="approveReg(\\''+r.id+'\\')">Approve</button> <button onclick="denyReg(\\''+r.id+'\\')">Deny</button></div>').join('');
+    }
+    window.approveReg = async function(id){ const op = currentUser ? currentUser.id : 'system'; const res = await fetch('/api/approve-registration', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ requestId: id, approve:true, operatorId: op }) }); const d = await res.json(); alert(JSON.stringify(d)); fetchRegistrations(); };
+    window.denyReg = async function(id){ const op = currentUser ? currentUser.id : 'system'; const res = await fetch('/api/approve-registration', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ requestId: id, approve:false, operatorId: op }) }); const d = await res.json(); alert(JSON.stringify(d)); fetchRegistrations(); };
+
+    // Simple users list endpoint for contacts
+    async function renderContacts(users){
+      contactsEl.innerHTML = (users || []).map(u=> '<div>'+ (u.displayName || u.username) +' <span class="muted">('+u.id+')</span></div>').join('');
+    }
+
+    // Simple fetch endpoints for users-list and registrations-list (proxied to our server endpoints)
+    // We'll create small helper endpoints on the server; for now try fetching them.
+    // Auth actions
+    loginBtn.onclick = async ()=>{
+      const username = login_username.value.trim();
+      const password = login_password.value;
+      if(!username || !password) return alert('username & password required');
+      const res = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ username, password }) });
+      const data = await res.json();
+      if(data.user){ setUser(data.user); alert('logged in'); fetch('/api/users-list').then(r=>r.json()).then(d=> renderContacts(d.users || [])); }
+      else alert('Login failed: '+ JSON.stringify(data));
+    };
+    logoutBtn.onclick = ()=>{ setUser(null); alert('logged out'); };
+
+    registerRequestBtn.onclick = async ()=>{
+      const username = reg_username.value.trim();
+      const password = reg_password.value;
+      const display = reg_display.value.trim();
+      if(!username || !password) return alert('username & password required');
+      const res = await fetch('/api/register-request', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ username, password, displayName: display }) });
+      const data = await res.json();
+      if(data.ok) alert('Registration requested, waiting approval');
+      else alert('Error: '+ JSON.stringify(data));
+    };
+
+    // Helper for fetching users and registrations endpoints (if server supports)
+    async function ensureServerHelpers(){
+      // try to create small endpoints if not present (the server may already implement).
+    }
+    // load initial data
+    renderUserBox();
+    loadInitial();
+    // restore client cache
+    const cached = localStorage.getItem('anomali_cache_messages');
+    if(cached){ try{ window.messagesCache = JSON.parse(cached); renderMessages(window.messagesCache); }catch(e){} }
+  </script>
+</body>
+</html>

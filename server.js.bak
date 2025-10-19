@@ -1,0 +1,272 @@
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
+const { v4: uuidv4 } = require('uuid');
+const bcrypt = require('bcryptjs');
+const { Low, JSONFile } = require('lowdb');
+
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+const FILES_DIR = path.join(DATA_DIR, 'uploads');
+if (!fs.existsSync(FILES_DIR)) fs.mkdirSync(FILES_DIR);
+
+// LowDB for simple JSON persistence
+const adapter = new JSONFile(path.join(DATA_DIR, 'db.json'));
+const db = new Low(adapter);
+
+(async () => {
+  await db.read();
+  db.data = db.data || { users: [], messages: [], channels: [{id:'global',name:'Global'}], files: [], folders: [], approvals: [] };
+  await db.write();
+})();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*' } });
+
+// Multer upload settings for attachments
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, FILES_DIR);
+  },
+  filename: function (req, file, cb) {
+    const id = Date.now() + '-' + Math.random().toString(36).slice(2,9);
+    cb(null, id + '-' + file.originalname);
+  }
+});
+const upload = multer({ storage });
+
+// In-memory online map: socketId -> user
+const online = new Map();
+
+// Utility functions
+async function saveDb(){
+  await db.write();
+}
+
+function sanitizeUserForClient(u){
+  if(!u) return u;
+  return { id: u.id, username: u.username, role: u.role };
+}
+
+// Basic auth-like endpoints (not secure production)
+app.post('/api/register', async (req, res) => {
+  await db.read();
+  const { username, password } = req.body;
+  if(!username || !password) return res.status(400).json({error:'username/password required'});
+  if(db.data.users.find(u=>u.username===username)) return res.status(400).json({error:'username exists'});
+  const id = uuidv4();
+  const hash = bcrypt.hashSync(password, 8);
+  const user = { id, username, passwordHash: hash, role: 'member', createdAt: Date.now() };
+  db.data.users.push(user);
+  await saveDb();
+  res.json({ ok:true, user: sanitizeUserForClient(user) });
+});
+
+app.post('/api/login', async (req, res) => {
+  await db.read();
+  const { username, password } = req.body;
+  const user = db.data.users.find(u=>u.username===username);
+  if(!user || !bcrypt.compareSync(password, user.passwordHash)) return res.status(400).json({error:'invalid'});
+  res.json({ ok:true, user: sanitizeUserForClient(user) });
+});
+
+app.post('/api/settings/change-username', async (req, res) => {
+  await db.read();
+  const { userId, newUsername } = req.body;
+  const user = db.data.users.find(u=>u.id===userId);
+  if(!user) return res.status(404).json({error:'not found'});
+  user.username = newUsername;
+  await saveDb();
+  res.json({ ok:true, user: sanitizeUserForClient(user) });
+});
+
+app.post('/api/settings/change-password', async (req, res) => {
+  await db.read();
+  const { userId, oldPassword, newPassword } = req.body;
+  const user = db.data.users.find(u=>u.id===userId);
+  if(!user || !bcrypt.compareSync(oldPassword, user.passwordHash)) return res.status(400).json({error:'invalid'});
+  user.passwordHash = bcrypt.hashSync(newPassword, 8);
+  await saveDb();
+  res.json({ ok:true });
+});
+
+// File library endpoints
+app.get('/api/files/list', async (req, res) => {
+  await db.read();
+  res.json({ files: db.data.files, folders: db.data.folders });
+});
+
+app.post('/api/files/create-folder', async (req, res) => {
+  await db.read();
+  const { ownerId, name, parentId } = req.body;
+  const folder = { id: uuidv4(), ownerId, name, parentId: parentId || null, createdAt: Date.now() };
+  db.data.folders.push(folder);
+  await saveDb();
+  res.json({ ok:true, folder });
+  io.emit('folder_created', folder);
+});
+
+app.post('/api/files/upload', upload.single('file'), async (req, res) => {
+  await db.read();
+  const { ownerId, parentId } = req.body;
+  const file = {
+    id: uuidv4(),
+    ownerId,
+    name: req.file.originalname,
+    path: '/data/uploads/' + path.basename(req.file.path),
+    filename: path.basename(req.file.path),
+    size: req.file.size,
+    parentId: parentId || null,
+    createdAt: Date.now()
+  };
+  db.data.files.push(file);
+  await saveDb();
+  io.emit('file_uploaded', file);
+  res.json({ ok:true, file });
+});
+
+app.post('/api/files/delete', async (req, res) => {
+  await db.read();
+  const { fileId } = req.body;
+  const idx = db.data.files.findIndex(f=>f.id===fileId);
+  if(idx === -1) return res.status(404).json({error:'not found'});
+  const f = db.data.files.splice(idx,1)[0];
+  try{ fs.unlinkSync(path.join(FILES_DIR, f.filename)); }catch(e){}
+  await saveDb();
+  io.emit('file_deleted', { fileId });
+  res.json({ ok:true });
+});
+
+// Serve uploaded files
+app.use('/data/uploads', express.static(FILES_DIR));
+
+// Messages API
+app.get('/api/messages', async (req, res) => {
+  await db.read();
+  res.json({ messages: db.data.messages || [] });
+});
+
+// Socket.IO realtime handlers
+io.on('connection', (socket) => {
+  console.log('socket connected', socket.id);
+
+  socket.on('register_user', async (user) => {
+    // user: { id, username }
+    online.set(socket.id, user);
+    io.emit('user_online', { user: sanitizeUserForClient(user) });
+    io.emit('online_count', { count: online.size });
+  });
+
+  socket.on('join_channel', (data) => {
+    const { channelId } = data;
+    socket.join(channelId);
+  });
+
+  socket.on('send_message', async (payload, cb) => {
+    // payload: { channelId, sender, text, attachments }
+    await db.read();
+    const msg = {
+      id: uuidv4(),
+      channelId: payload.channelId || 'global',
+      sender: payload.sender,
+      text: payload.text || '',
+      attachments: payload.attachments || [],
+      editedAt: null,
+      deleted: false,
+      createdAt: Date.now()
+    };
+    db.data.messages.push(msg);
+    await saveDb();
+    io.to(msg.channelId).emit('message', msg);
+    if(cb) cb({ ok:true, message: msg });
+  });
+
+  socket.on('edit_message', async ({ messageId, newText }) => {
+    await db.read();
+    const m = db.data.messages.find(x=>x.id===messageId);
+    if(m){
+      m.text = newText;
+      m.editedAt = Date.now();
+      await saveDb();
+      io.to(m.channelId).emit('message_edited', { messageId, newText });
+    }
+  });
+
+  socket.on('delete_message', async ({ messageId }) => {
+    await db.read();
+    const m = db.data.messages.find(x=>x.id===messageId);
+    if(m){
+      m.deleted = true;
+      await saveDb();
+      io.to(m.channelId).emit('message_deleted', { messageId });
+    }
+  });
+
+  socket.on('cut_message', async ({ messageId, targetChannel }) => {
+    // Cut = remove and post to another place (clipboard channel)
+    await db.read();
+    const idx = db.data.messages.findIndex(x=>x.id===messageId);
+    if(idx !== -1){
+      const [m] = db.data.messages.splice(idx,1);
+      // mark deleted in original channel
+      m.deleted = true;
+      await saveDb();
+      io.to(m.channelId).emit('message_deleted', { messageId });
+      // optionally create a new message in target channel with same content
+      const newMsg = { ...m, id: uuidv4(), channelId: targetChannel || 'global', createdAt: Date.now(), deleted:false };
+      db.data.messages.push(newMsg);
+      await saveDb();
+      io.to(newMsg.channelId).emit('message', newMsg);
+    }
+  });
+
+  // Operator actions: invite / kick / approval flows
+  socket.on('operator_invite', ({ channelId, userId, by }) => {
+    io.emit('invited', { channelId, userId, by });
+  });
+
+  socket.on('operator_kick', ({ channelId, userId, by }) => {
+    io.emit('kicked', { channelId, userId, by });
+  });
+
+  socket.on('request_approval', async ({ actionType, requestedBy, meta }) => {
+    await db.read();
+    const approval = { id: uuidv4(), actionType, requestedBy, meta, status: 'pending', createdAt: Date.now() };
+    db.data.approvals.push(approval);
+    await saveDb();
+    io.emit('approval_required', approval);
+  });
+
+  socket.on('respond_approval', async ({ approvalId, decision, by }) => {
+    await db.read();
+    const a = db.data.approvals.find(x=>x.id===approvalId);
+    if(a){
+      a.status = decision;
+      a.respondedBy = by;
+      a.respondedAt = Date.now();
+      await saveDb();
+      io.emit('approval_result', a);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    const user = online.get(socket.id);
+    if(user) {
+      io.emit('user_offline', { user: sanitizeUserForClient(user) });
+    }
+    online.delete(socket.id);
+    io.emit('online_count', { count: online.size });
+  });
+});
+
+const PORT = process.env.PORT || 4000;
+server.listen(PORT, () => console.log('Server listening on', PORT));

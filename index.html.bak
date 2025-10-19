@@ -1,0 +1,321 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>AnomaliWeb — Minimal Fullstack</title>
+  <style>
+    body { font-family: Inter, Arial; margin:0; height:100vh; display:flex; }
+    #sidebar { width:280px; border-right:1px solid #ddd; padding:12px; box-sizing:border-box; }
+    #main { flex:1; display:flex; flex-direction:column; }
+    .header { padding:12px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center; }
+    .messages { flex:1; overflow:auto; padding:12px; background:#fafafa; }
+    .message { padding:8px; border-radius:6px; margin-bottom:8px; background:white; box-shadow:0 0 0 1px #eee inset; }
+    .controls { display:flex; gap:8px; }
+    .inputRow { padding:8px; border-top:1px solid #eee; display:flex; gap:8px; align-items:end; }
+    .attachments { display:flex; gap:6px; align-items:center; }
+    .file-thumb { max-width:120px; max-height:80px; object-fit:cover; border-radius:4px; border:1px solid #ddd; }
+    #fileList { margin-top:8px; }
+    .onlineItem { font-size:13px; padding:6px; border-radius:6px; background:#f3f7ff; margin-bottom:6px; }
+    button { cursor:pointer; }
+    .small { font-size:12px; color:#666; }
+    .folder { font-weight:bold; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h3>AnomaliWeb</h3>
+    <div id="userBox"></div>
+    <hr/>
+    <div><strong>Online (<span id="onlineCount">0</span>)</strong></div>
+    <div id="onlineList"></div>
+    <hr/>
+    <div><strong>File Library</strong></div>
+    <div id="folders"></div>
+    <div id="files"></div>
+    <button id="createFolderBtn">Create Folder</button>
+    <hr/>
+    <div><strong>Operator</strong></div>
+    <div class="small">Invite / Kick / Approvals</div>
+    <button id="inviteBtn">Invite (simulate)</button>
+    <button id="kickBtn">Kick (simulate)</button>
+    <button id="requestApprovalBtn">Request Approval</button>
+    <hr/>
+    <div><strong>Settings</strong></div>
+    <div><input id="usernameInput" placeholder="username"/></div>
+    <div><input id="passwordInput" placeholder="password" type="password"/></div>
+    <button id="registerBtn">Register</button>
+    <button id="loginBtn">Login</button>
+    <button id="logoutBtn">Logout</button>
+  </div>
+
+  <div id="main">
+    <div class="header">
+      <div><strong id="channelTitle">Global</strong></div>
+      <div class="controls">
+        <div class="small">Messages: <span id="msgCount">0</span></div>
+        <div class="small">Users Online: <span id="onlineBadge">0</span></div>
+      </div>
+    </div>
+
+    <div class="messages" id="messages"></div>
+
+    <div class="inputRow">
+      <div style="display:flex;flex-direction:column;flex:1;">
+        <textarea id="messageInput" rows="2" placeholder="Tulis pesan..."></textarea>
+        <div id="fileList"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <input id="fileInput" type="file" multiple style="display:block;margin-bottom:6px;"/>
+        <button id="sendBtn">Kirim</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    // Simple client "auth" stored locally
+    let currentUser = JSON.parse(localStorage.getItem('anomali_user') || 'null');
+
+    const userBox = document.getElementById('userBox');
+    const usernameInput = document.getElementById('usernameInput');
+    const passwordInput = document.getElementById('passwordInput');
+    const registerBtn = document.getElementById('registerBtn');
+    const loginBtn = document.getElementById('loginBtn');
+    const logoutBtn = document.getElementById('logoutBtn');
+
+    const messagesEl = document.getElementById('messages');
+    const messageInput = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const fileInput = document.getElementById('fileInput');
+    const fileListEl = document.getElementById('fileList');
+    const onlineList = document.getElementById('onlineList');
+    const onlineCount = document.getElementById('onlineCount');
+    const onlineBadge = document.getElementById('onlineBadge');
+    const msgCount = document.getElementById('msgCount');
+
+    const createFolderBtn = document.getElementById('createFolderBtn');
+    const foldersEl = document.getElementById('folders');
+    const filesEl = document.getElementById('files');
+    const inviteBtn = document.getElementById('inviteBtn');
+    const kickBtn = document.getElementById('kickBtn');
+    const requestApprovalBtn = document.getElementById('requestApprovalBtn');
+
+    const API = '';
+
+    function setUser(u){
+      currentUser = u;
+      if(u) localStorage.setItem('anomali_user', JSON.stringify(u));
+      else localStorage.removeItem('anomali_user');
+      renderUserBox();
+      if(u) socket.emit('register_user', u);
+    }
+
+    function renderUserBox(){
+      if(currentUser){
+        userBox.innerHTML = '<div><strong>'+currentUser.username+'</strong></div><div class="small">ID: '+currentUser.id+'</div>';
+        usernameInput.value = currentUser.username;
+      } else {
+        userBox.innerHTML = '<div class="small">Not logged in</div>';
+      }
+    }
+
+    // Load initial messages & files
+    async function loadInitial(){
+      const res = await fetch(API + '/api/messages');
+      const data = await res.json();
+      window.messagesCache = data.messages || [];
+      renderMessages(window.messagesCache);
+      msgCount.innerText = window.messagesCache.length;
+
+      const fres = await fetch(API + '/api/files/list');
+      const fdata = await fres.json();
+      renderFileLibrary(fdata.folders || [], fdata.files || []);
+    }
+
+    function renderMessages(messages){
+      messagesEl.innerHTML = '';
+      messages.forEach(m => {
+        const el = document.createElement('div');
+        el.className = 'message';
+        el.id = 'msg-'+m.id;
+        const top = document.createElement('div');
+        top.innerHTML = '<b>'+ (m.sender?.username || 'Unknown') +'</b> <span class="small">'+ new Date(m.createdAt).toLocaleString() +'</span>';
+        const body = document.createElement('div');
+        body.innerText = m.deleted ? '[Pesan dihapus]' : m.text;
+        if(m.attachments && m.attachments.length){
+          const att = document.createElement('div');
+          m.attachments.forEach(a=>{
+            const ael = document.createElement('div');
+            const link = document.createElement('a');
+            link.href = a.url;
+            link.target = '_blank';
+            link.innerText = a.name;
+            ael.appendChild(link);
+            att.appendChild(ael);
+          });
+          body.appendChild(att);
+        }
+        el.appendChild(top);
+        el.appendChild(body);
+        const actions = document.createElement('div');
+        actions.className = 'small';
+        if(currentUser && m.sender && m.sender.id === currentUser.id && !m.deleted){
+          const editBtn = document.createElement('button'); editBtn.innerText='Edit'; editBtn.onclick = ()=> editMessagePrompt(m.id);
+          const delBtn = document.createElement('button'); delBtn.innerText='Hapus'; delBtn.onclick = ()=> deleteMessage(m.id);
+          const cutBtn = document.createElement('button'); cutBtn.innerText='Potong'; cutBtn.onclick = ()=> cutMessage(m.id);
+          actions.appendChild(editBtn); actions.appendChild(delBtn); actions.appendChild(cutBtn);
+        }
+        el.appendChild(actions);
+        messagesEl.appendChild(el);
+      });
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function addMessageToCache(m){
+      window.messagesCache = window.messagesCache || [];
+      window.messagesCache.push(m);
+      renderMessages(window.messagesCache);
+      msgCount.innerText = window.messagesCache.length;
+      // persist client cache as backup
+      localStorage.setItem('anomali_cache_messages', JSON.stringify(window.messagesCache.slice(-200)));
+    }
+
+    // Socket events
+    socket.on('connect', ()=>{
+      if(currentUser) socket.emit('register_user', currentUser);
+    });
+    socket.on('message', (m)=>{ addMessageToCache(m); });
+    socket.on('message_edited', ({ messageId, newText })=>{
+      const m = (window.messagesCache||[]).find(x=>x.id===messageId);
+      if(m){ m.text = newText; m.editedAt = Date.now(); renderMessages(window.messagesCache); }
+    });
+    socket.on('message_deleted', ({ messageId })=>{
+      const m = (window.messagesCache||[]).find(x=>x.id===messageId);
+      if(m){ m.deleted = true; renderMessages(window.messagesCache); }
+    });
+    socket.on('user_online', ({ user })=>{
+      addOnline(user);
+    });
+    socket.on('user_offline', ({ user })=>{
+      removeOnline(user);
+    });
+    socket.on('online_count', ({ count })=>{
+      onlineCount.innerText = count; onlineBadge.innerText = count;
+    });
+    socket.on('file_uploaded', (f)=>{
+      // refresh file list
+      fetch(API + '/api/files/list').then(r=>r.json()).then(d=> renderFileLibrary(d.folders || [], d.files || []));
+    });
+    socket.on('file_deleted', ({ fileId })=>{
+      fetch(API + '/api/files/list').then(r=>r.json()).then(d=> renderFileLibrary(d.folders || [], d.files || []));
+    });
+    socket.on('folder_created', (f)=>{
+      fetch(API + '/api/files/list').then(r=>r.json()).then(d=> renderFileLibrary(d.folders || [], d.files || []));
+    });
+
+    // Online list handling
+    function addOnline(u){
+      const id = 'online-'+u.id;
+      if(document.getElementById(id)) return;
+      const el = document.createElement('div');
+      el.id = id; el.className='onlineItem'; el.innerText = u.username;
+      onlineList.appendChild(el);
+    }
+    function removeOnline(u){
+      const id = 'online-'+u.id;
+      const el = document.getElementById(id); if(el) el.remove();
+    }
+
+    // Actions: send/edit/delete/cut
+    sendBtn.onclick = async ()=>{
+      const text = messageInput.value.trim();
+      const files = Array.from(fileInput.files || []);
+      let attachments = [];
+      if(files.length){
+        // do multipart upload for each file
+        for(const f of files){
+          const fd = new FormData();
+          fd.append('file', f);
+          fd.append('ownerId', currentUser ? currentUser.id : 'guest');
+          const res = await fetch(API + '/api/files/upload', { method:'POST', body: fd });
+          const data = await res.json();
+          if(data.file) attachments.push({ id: data.file.id, url: location.origin + data.file.path.replace('/data','/data'), name: data.file.name });
+        }
+      }
+      const payload = { channelId:'global', sender: currentUser || {id:'guest', username:'Guest'}, text, attachments };
+      socket.emit('send_message', payload, (ack)=>{
+        if(ack && ack.message){ addMessageToCache(ack.message); messageInput.value=''; fileInput.value=''; fileListEl.innerHTML=''; }
+      });
+    };
+
+    async function editMessagePrompt(id){
+      const newText = prompt('Edit pesan:');
+      if(newText !== null) socket.emit('edit_message', { messageId: id, newText });
+    }
+    function deleteMessage(id){
+      if(confirm('Hapus pesan?')) socket.emit('delete_message', { messageId: id });
+    }
+    function cutMessage(id){
+      const target = prompt('Masukkan channel tujuan (mis. clipboard):','clipboard');
+      if(target) socket.emit('cut_message', { messageId: id, targetChannel: target });
+    }
+
+    // File library UI
+    function renderFileLibrary(folders, files){
+      foldersEl.innerHTML = '<div class="folder">Folders:</div>' + folders.map(f=> '<div>- '+f.name+' ('+f.ownerId+')</div>').join('');
+      filesEl.innerHTML = '<div class="folder">Files:</div>' + files.map(f=> '<div>- <a href="'+ (location.origin + f.path.replace('/data','/data')) +'" target="_blank">'+f.name+'</a> ('+f.ownerId+')</div>').join('');
+    }
+
+    createFolderBtn.onclick = async ()=>{
+      const name = prompt('Nama folder:');
+      if(!name) return;
+      const res = await fetch(API + '/api/files/create-folder', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ownerId: currentUser?currentUser.id:'guest', name }) });
+      const data = await res.json();
+      if(data.folder) alert('Folder created');
+    };
+
+    inviteBtn.onclick = ()=>{
+      const uid = prompt('UserId to invite:');
+      if(uid) socket.emit('operator_invite', { channelId:'global', userId: uid, by: currentUser?currentUser.username:'guest' });
+    };
+    kickBtn.onclick = ()=>{
+      const uid = prompt('UserId to kick:');
+      if(uid) socket.emit('operator_kick', { channelId:'global', userId: uid, by: currentUser?currentUser.username:'guest' });
+    };
+    requestApprovalBtn.onclick = ()=>{
+      const actionType = prompt('What approval do you request?','delete-file');
+      if(actionType) socket.emit('request_approval', { actionType, requestedBy: currentUser?currentUser.username:'guest', meta:{} });
+    };
+
+    // Simple register/login
+    registerBtn.onclick = async ()=>{
+      const username = usernameInput.value.trim();
+      const password = passwordInput.value;
+      if(!username || !password) return alert('username & password required');
+      const res = await fetch(API + '/api/register', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ username, password }) });
+      const data = await res.json();
+      if(data.user){ setUser(data.user); alert('registered'); }
+      else alert(JSON.stringify(data));
+    };
+    loginBtn.onclick = async ()=>{
+      const username = usernameInput.value.trim();
+      const password = passwordInput.value;
+      const res = await fetch(API + '/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ username, password }) });
+      const data = await res.json();
+      if(data.user){ setUser(data.user); alert('logged in'); }
+      else alert(JSON.stringify(data));
+    };
+    logoutBtn.onclick = ()=>{ setUser(null); alert('logged out'); };
+
+    // Initialize app
+    renderUserBox();
+    loadInitial();
+
+    // restore client cache if available
+    const cached = localStorage.getItem('anomali_cache_messages');
+    if(cached){ try{ window.messagesCache = JSON.parse(cached); renderMessages(window.messagesCache); }catch(e){} }
+  </script>
+</body>
+</html>
